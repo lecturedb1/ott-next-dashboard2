@@ -1,5 +1,5 @@
 const isGithubActions = process.env.GITHUB_ACTIONS === "true";
-const githubPagesBasePath = "/ott-next-dashboard";
+const githubPagesBasePath = "/ott-next-dashboard2";
 
 const nextConfig = {
   output: "export",

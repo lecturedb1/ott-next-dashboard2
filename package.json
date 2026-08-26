@@ -1,0 +1,18 @@
+{
+  "name": "ott-next-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
+    "chart.js": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-chartjs-2": "latest",
+    "react-dom": "latest"
+  }
+}

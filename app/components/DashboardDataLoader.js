@@ -354,7 +354,7 @@ export default function DashboardDataLoader({ reports = [] }) {
     dataManagerIdentifiers.has(currentUserId.toLowerCase());
 
   const openReportModal = () => {
-    if (!reports.length || !selectedReport) {
+    if (!session || !reports.length || !selectedReport) {
       return;
     }
 
@@ -503,6 +503,14 @@ export default function DashboardDataLoader({ reports = [] }) {
     [],
   );
 
+  useEffect(() => {
+    if (!session && isReportModalOpen) {
+      window.clearTimeout(reportModalCloseTimerRef.current);
+      setIsReportModalVisible(false);
+      setIsReportModalOpen(false);
+    }
+  }, [isReportModalOpen, session]);
+
   const openModal = () => {
     if (!isDataManager) {
       return;
@@ -570,6 +578,8 @@ export default function DashboardDataLoader({ reports = [] }) {
       setData(null);
       setErrorMessage("");
       setIsModalOpen(false);
+      setIsReportModalVisible(false);
+      setIsReportModalOpen(false);
     }
 
     setIsAuthSubmitting(false);
@@ -729,14 +739,16 @@ export default function DashboardDataLoader({ reports = [] }) {
       <div className="headerTitleRow">
         <h1>OTT 이용 현황 대시보드</h1>
         <div className="headerActions">
-          <button
-            className="secondaryButton reportOpenButton"
-            disabled={!reports.length}
-            type="button"
-            onClick={openReportModal}
-          >
-            분석 보고서
-          </button>
+          {session ? (
+            <button
+              className="secondaryButton reportOpenButton"
+              disabled={!reports.length}
+              type="button"
+              onClick={openReportModal}
+            >
+              분석 보고서
+            </button>
+          ) : null}
           {isDataManager ? (
             <button
               className="addDataButton"
@@ -920,7 +932,7 @@ export default function DashboardDataLoader({ reports = [] }) {
   ) : null;
 
   const reportModal =
-    isReportModalOpen && selectedReport ? (
+    isReportModalOpen && session && selectedReport ? (
       <div
         aria-labelledby="report-modal-title"
         aria-modal="true"

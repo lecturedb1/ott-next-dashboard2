@@ -30,7 +30,42 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  min-width: 0;
   gap: 8px;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.reportSelectField {
+  flex: 0 1 260px;
+  min-width: 190px;
+}
+
+.reportSelect {
+  width: 100%;
+  height: 36px;
+  padding: 0 30px 0 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  background: #fff;
+  color: #202124;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.reportSelect:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+  background: #f3f4f6;
 }
 
 .userEmail {
@@ -61,6 +96,7 @@ body {
 .addDataButton,
 .primaryButton,
 .secondaryButton {
+  flex: 0 0 auto;
   height: 36px;
   padding: 0 14px;
   border-radius: 7px;
@@ -68,6 +104,8 @@ body {
   font: inherit;
   font-size: 13px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .addDataButton,
@@ -99,6 +137,10 @@ body {
   background: #f9fafb;
 }
 
+.reportOpenButton {
+  min-width: 92px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -120,6 +162,138 @@ body {
 .statusPanel p {
   margin: 0;
   color: #666;
+}
+
+.reportModalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  padding: 20px;
+  background: #f4f5f7;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.reportModalBackdrop.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.reportModalPanel {
+  width: 100%;
+  height: 100%;
+}
+
+.reportViewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.reportViewerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.reportTitleGroup {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.reportTitleGroup h2 {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reportModalSelectField {
+  flex: 0 1 260px;
+}
+
+.reportControls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.reportNavButton {
+  min-width: 58px;
+}
+
+.reportCloseButton {
+  min-width: 58px;
+}
+
+.reportPageIndicator {
+  min-width: 58px;
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reportFrame {
+  position: relative;
+  flex: 0 1 auto;
+  align-self: center;
+  overflow: hidden;
+  width: min(100%, calc((100vh - 118px) * 1.7778));
+  height: min(calc((100vw - 40px) * 0.5625), calc(100vh - 118px));
+  aspect-ratio: 16 / 9;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #111827;
+}
+
+.reportCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+}
+
+.reportTransitionCanvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.reportTransitionCanvas.visible {
+  opacity: 1;
+}
+
+.reportOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.62);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reportError {
+  background: rgba(127, 29, 29, 0.82);
 }
 
 .card {
@@ -659,6 +833,37 @@ th {
     flex-wrap: wrap;
     justify-content: flex-start;
     width: 100%;
+  }
+
+  .reportViewerHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .reportTitleGroup {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .reportModalSelectField {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  .reportControls {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .reportModalBackdrop {
+    padding: 12px;
+  }
+
+  .reportFrame {
+    width: calc(100vw - 24px);
+    height: calc((100vw - 24px) * 0.5625);
   }
 
   .userEmail {

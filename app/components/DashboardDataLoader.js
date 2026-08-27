@@ -1,10 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import DashboardCharts from "./DashboardCharts";
+import ReportSlideshow from "./ReportSlideshow";
 import supabase from "../lib/supabase";
 
 const SUPABASE_PAGE_SIZE = 1000;
+const JWT_CLOCK_SKEW_RETRY_DELAYS = [1500, 4000, 8000];
+const REPORT_MODAL_TRANSITION_MS = 240;
 const initialForm = {
   week_start: "",
   active_devices: "",
@@ -42,17 +45,47 @@ function assertSupabaseResult(tableName, result) {
   return result.data ?? [];
 }
 
+function isJwtIssuedAtFutureError(result) {
+  return (
+    result.error?.code === "PGRST303" ||
+    result.error?.message?.toLowerCase().includes("jwt issued at future")
+  );
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function runSupabaseQueryWithClockSkewRetry(createQuery) {
+  for (
+    let attempt = 0;
+    attempt <= JWT_CLOCK_SKEW_RETRY_DELAYS.length;
+    attempt += 1
+  ) {
+    const result = await createQuery();
+
+    if (
+      !isJwtIssuedAtFutureError(result) ||
+      attempt === JWT_CLOCK_SKEW_RETRY_DELAYS.length
+    ) {
+      return result;
+    }
+
+    await wait(JWT_CLOCK_SKEW_RETRY_DELAYS[attempt]);
+  }
+}
+
 async function fetchTableRows(tableName, orderColumn) {
   const rows = [];
   let from = 0;
 
   while (true) {
     const to = from + SUPABASE_PAGE_SIZE - 1;
-    const result = await supabase
-      .from(tableName)
-      .select("*")
-      .order(orderColumn)
-      .range(from, to);
+    const result = await runSupabaseQueryWithClockSkewRetry(() =>
+      supabase.from(tableName).select("*").order(orderColumn).range(from, to),
+    );
     const pageRows = assertSupabaseResult(tableName, result);
 
     rows.push(...pageRows);
@@ -287,7 +320,8 @@ async function getDashboardData() {
   };
 }
 
-export default function DashboardDataLoader() {
+export default function DashboardDataLoader({ reports = [] }) {
+  const reportModalCloseTimerRef = useRef(null);
   const [data, setData] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -296,19 +330,48 @@ export default function DashboardDataLoader() {
   const [isSaving, setIsSaving] = useState(false);
   const [session, setSession] = useState(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isReportModalVisible, setIsReportModalVisible] = useState(false);
   const [authMode, setAuthMode] = useState("login");
   const [loginForm, setLoginForm] = useState(initialLoginForm);
   const [authError, setAuthError] = useState("");
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [isPasswordChanging, setIsPasswordChanging] = useState(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [selectedReportFileName, setSelectedReportFileName] = useState(
+    reports[0]?.fileName ?? "",
+  );
   const services = data?.services ?? [];
   const eventTypes = data?.eventTypes ?? [];
   const currentUserEmail = session?.user?.email ?? "";
   const currentUserId = session?.user?.id ?? "";
+  const sessionUserId = session?.user?.id ?? "";
+  const selectedReport =
+    reports.find((report) => report.fileName === selectedReportFileName) ??
+    null;
   const isDataManager =
     dataManagerIdentifiers.has(currentUserEmail.toLowerCase()) ||
     dataManagerIdentifiers.has(currentUserId.toLowerCase());
+
+  const openReportModal = () => {
+    if (!reports.length || !selectedReport) {
+      return;
+    }
+
+    window.clearTimeout(reportModalCloseTimerRef.current);
+    setIsReportModalOpen(true);
+    requestAnimationFrame(() => {
+      setIsReportModalVisible(true);
+    });
+  };
+
+  const closeReportModal = () => {
+    setIsReportModalVisible(false);
+    window.clearTimeout(reportModalCloseTimerRef.current);
+    reportModalCloseTimerRef.current = window.setTimeout(() => {
+      setIsReportModalOpen(false);
+    }, REPORT_MODAL_TRANSITION_MS);
+  };
 
   const loadData = useCallback(() => {
     let isMounted = true;
@@ -387,10 +450,23 @@ export default function DashboardDataLoader() {
     }
 
     return loadData();
-  }, [isAuthReady, loadData, session]);
+  }, [isAuthReady, loadData, sessionUserId]);
 
   useEffect(() => {
-    if (!isModalOpen && !isAuthModalOpen) {
+    if (!reports.length) {
+      setSelectedReportFileName("");
+      return;
+    }
+
+    setSelectedReportFileName((currentFileName) =>
+      reports.some((report) => report.fileName === currentFileName)
+        ? currentFileName
+        : reports[0].fileName,
+    );
+  }, [reports]);
+
+  useEffect(() => {
+    if (!isModalOpen && !isAuthModalOpen && !isReportModalOpen) {
       return;
     }
 
@@ -400,7 +476,32 @@ export default function DashboardDataLoader() {
     return () => {
       document.body.style.overflow = originalOverflow;
     };
-  }, [isModalOpen, isAuthModalOpen]);
+  }, [isModalOpen, isAuthModalOpen, isReportModalOpen]);
+
+  useEffect(() => {
+    if (!isReportModalOpen) {
+      return undefined;
+    }
+
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        closeReportModal();
+      }
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isReportModalOpen]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(reportModalCloseTimerRef.current);
+    },
+    [],
+  );
 
   const openModal = () => {
     if (!isDataManager) {
@@ -599,7 +700,9 @@ export default function DashboardDataLoader() {
       event_type_id: normalizeSelectId(form.event_type_id),
     };
 
-    const result = await supabase.from("ott_weekly").insert(payload);
+    const result = await runSupabaseQueryWithClockSkewRetry(() =>
+      supabase.from("ott_weekly").insert(payload),
+    );
 
     if (result.error) {
       setSaveError(result.error.message);
@@ -626,6 +729,14 @@ export default function DashboardDataLoader() {
       <div className="headerTitleRow">
         <h1>OTT 이용 현황 대시보드</h1>
         <div className="headerActions">
+          <button
+            className="secondaryButton reportOpenButton"
+            disabled={!reports.length}
+            type="button"
+            onClick={openReportModal}
+          >
+            분석 보고서
+          </button>
           {isDataManager ? (
             <button
               className="addDataButton"
@@ -808,6 +919,28 @@ export default function DashboardDataLoader() {
     </div>
   ) : null;
 
+  const reportModal =
+    isReportModalOpen && selectedReport ? (
+      <div
+        aria-labelledby="report-modal-title"
+        aria-modal="true"
+        className={`reportModalBackdrop${
+          isReportModalVisible ? " visible" : ""
+        }`}
+        role="dialog"
+      >
+        <div className="reportModalPanel">
+          <ReportSlideshow
+            report={selectedReport}
+            reports={reports}
+            selectedReportFileName={selectedReportFileName}
+            onClose={closeReportModal}
+            onReportChange={setSelectedReportFileName}
+          />
+        </div>
+      </div>
+    ) : null;
+
   const authModal = isAuthModalOpen ? (
     <div
       aria-labelledby="login-title"
@@ -928,6 +1061,7 @@ export default function DashboardDataLoader() {
           <p>{errorMessage}</p>
         </section>
         {modal}
+        {reportModal}
         {authModal}
       </>
     );
@@ -942,6 +1076,7 @@ export default function DashboardDataLoader() {
           <p>잠시 후 데이터 확인 가능 여부를 표시합니다.</p>
         </section>
         {modal}
+        {reportModal}
         {authModal}
       </>
     );
@@ -956,6 +1091,7 @@ export default function DashboardDataLoader() {
           <p>오른쪽 상단의 로그인 버튼을 눌러 이메일과 비번을 입력해주세요.</p>
         </section>
         {modal}
+        {reportModal}
         {authModal}
       </>
     );
@@ -970,6 +1106,7 @@ export default function DashboardDataLoader() {
           <p>브라우저에서 직접 최신 데이터를 요청하고 있습니다.</p>
         </section>
         {modal}
+        {reportModal}
         {authModal}
       </>
     );
@@ -984,6 +1121,7 @@ export default function DashboardDataLoader() {
           <p>Supabase 테이블에 조회 가능한 행이 있는지 확인해주세요.</p>
         </section>
         {modal}
+        {reportModal}
         {authModal}
       </>
     );
@@ -994,6 +1132,7 @@ export default function DashboardDataLoader() {
       {header}
       <DashboardCharts data={data} />
       {modal}
+      {reportModal}
       {authModal}
     </>
   );

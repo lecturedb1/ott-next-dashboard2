@@ -11,6 +11,7 @@
     "@supabase/supabase-js": "^2.112.4",
     "chart.js": "latest",
     "next": "latest",
+    "pdfjs-dist": "^6.2.108",
     "react": "latest",
     "react-chartjs-2": "latest",
     "react-dom": "latest"

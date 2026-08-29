@@ -379,7 +379,7 @@ const lineChartOptions = {
   },
 };
 
-export default function DashboardCharts({ data }) {
+export default function DashboardCharts({ data, onRankingDateChange }) {
   const rangeDragRef = useRef(null);
   const usageRangeDragRef = useRef(null);
   const comparisonRangeDragRef = useRef(null);
@@ -412,6 +412,10 @@ export default function DashboardCharts({ data }) {
     start: 0,
     end: Math.max(allComparisonDates.length - 1, 0),
   });
+
+  useEffect(() => {
+    onRankingDateChange?.(selectedRankingDate);
+  }, [onRankingDateChange, selectedRankingDate]);
 
   useEffect(() => {
     if (!isRankingDateMenuOpen) {

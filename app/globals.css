@@ -690,7 +690,7 @@ th {
 
 .modalPanel {
   width: min(640px, 100%);
-  max-height: calc(100vh - 40px);
+  max-height: calc(100vh - 120px);
   overflow-y: auto;
   padding: 22px;
   border: 1px solid #e5e7eb;
@@ -701,6 +701,154 @@ th {
 
 .loginModalPanel {
   width: min(420px, 100%);
+}
+
+.reportDataPanel {
+  width: min(960px, 100%);
+  padding: 18px;
+}
+
+.reportDataSubtitle {
+  margin: 5px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reportDataState {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.reportDataError {
+  color: #b91c1c;
+}
+
+.reportDataPages {
+  display: grid;
+  gap: 14px;
+}
+
+.reportDataPage {
+  padding-top: 14px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.reportDataPage:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.reportDataPageHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.reportDataPageHeader span {
+  color: #5b3fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reportDataPageHeader h3 {
+  margin: 0;
+  color: #171b3a;
+  font-size: 17px;
+}
+
+.reportDataPageHeader p {
+  margin: 0 0 0 auto;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reportDataMetrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.reportDataMetric {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.reportDataMetric span,
+.reportDataMetric small {
+  display: block;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reportDataMetric strong {
+  display: block;
+  overflow: hidden;
+  margin: 8px 0 6px;
+  color: #171b3a;
+  font-size: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reportDataBullets {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0 0;
+  padding-left: 18px;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reportDataTableWrap {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.reportDataTable {
+  min-width: 100%;
+}
+
+.reportDataTable th {
+  background: #5b3fff;
+  color: #fff;
+}
+
+.reportDataTable td {
+  background: #fff;
+}
+
+.reportDataTable tr:nth-child(even) td {
+  background: #f7f5ff;
+}
+
+.reportDataChartTables {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.reportDataChartTables h4 {
+  margin: 0 0 8px;
+  color: #374151;
+  font-size: 13px;
 }
 
 .modalHeader {
@@ -855,6 +1003,21 @@ th {
   .reportControls {
     justify-content: space-between;
     width: 100%;
+  }
+
+  .reportDataPageHeader {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .reportDataPageHeader p {
+    margin-left: 0;
+  }
+
+  .reportDataMetrics,
+  .reportDataChartTables {
+    grid-template-columns: 1fr;
   }
 
   .reportModalBackdrop {

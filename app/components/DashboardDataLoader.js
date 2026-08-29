@@ -106,6 +106,10 @@ function roundToTwo(value) {
   return Math.round(value * 100) / 100;
 }
 
+function roundToOne(value) {
+  return Math.round(value * 10) / 10;
+}
+
 function sum(rows, key) {
   return rows.reduce((total, row) => total + Number(row[key] ?? 0), 0);
 }
@@ -169,6 +173,67 @@ function addDays(value, days) {
   return date.toISOString().slice(0, 10);
 }
 
+function formatShortDate(value) {
+  if (!value) {
+    return "-";
+  }
+
+  return String(value).slice(2, 10);
+}
+
+function formatNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  return Number(value).toLocaleString("ko-KR");
+}
+
+function formatDecimal(value, digits = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  return Number(value).toLocaleString("ko-KR", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  });
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  return `${Number(value) > 0 ? "+" : ""}${formatDecimal(value, 1)}%`;
+}
+
+function formatSignedNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  return `${Number(value) > 0 ? "+" : ""}${formatNumber(value)}`;
+}
+
+function formatMetricCompact(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-";
+  }
+
+  const numberValue = Number(value);
+
+  if (Math.abs(numberValue) >= 1000000) {
+    return `${formatDecimal(numberValue / 1000000, 2)}M`;
+  }
+
+  if (Math.abs(numberValue) >= 1000) {
+    return `${formatDecimal(numberValue / 1000, 1)}K`;
+  }
+
+  return formatNumber(numberValue);
+}
+
 function createFormDefaults(services, latestWeek) {
   return {
     ...initialForm,
@@ -176,6 +241,529 @@ function createFormDefaults(services, latestWeek) {
     service_id: services[0]?.id != null ? String(services[0].id) : "",
     event_type_id: "",
   };
+}
+
+async function fetchWeeklyRowsUntil(referenceWeek) {
+  const rows = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + SUPABASE_PAGE_SIZE - 1;
+    const result = await runSupabaseQueryWithClockSkewRetry(() =>
+      supabase
+        .from("ott_weekly")
+        .select("*")
+        .lte("week_start", referenceWeek)
+        .order("week_start")
+        .range(from, to),
+    );
+    const pageRows = assertSupabaseResult("ott_weekly", result);
+
+    rows.push(...pageRows);
+
+    if (pageRows.length < SUPABASE_PAGE_SIZE) {
+      return rows;
+    }
+
+    from += SUPABASE_PAGE_SIZE;
+  }
+}
+
+function calculateReportRows(weeklyRows, servicesRows, referenceWeek) {
+  const serviceById = createLookup(servicesRows, "id");
+  const rows = weeklyRows
+    .map((row) => ({
+      week_start: formatWeekStart(row.week_start),
+      service_id: row.service_id,
+      service_name: serviceById.get(row.service_id)?.name ?? "Unknown",
+      wau: Number(row.wau ?? 0),
+      total_usage_hours: Number(row.total_usage_hours ?? 0),
+      active_devices: Number(row.active_devices ?? 0),
+      new_installs: Number(row.new_installs ?? 0),
+      event_note: row.event_note ?? null,
+    }))
+    .sort(
+      (left, right) =>
+        String(left.service_id).localeCompare(String(right.service_id)) ||
+        left.week_start.localeCompare(right.week_start),
+    );
+  const rowsByServiceId = new Map();
+
+  rows.forEach((row) => {
+    const serviceRows = rowsByServiceId.get(row.service_id) ?? [];
+    serviceRows.push(row);
+    rowsByServiceId.set(row.service_id, serviceRows);
+  });
+
+  const baseRows = [...rowsByServiceId.values()].flatMap((serviceRows) =>
+    serviceRows.map((row, index) => {
+      const previousRow = serviceRows[index - 1];
+
+      return {
+        ...row,
+        ats: row.wau === 0 ? null : roundToTwo(row.total_usage_hours / row.wau),
+        prev_wau: previousRow?.wau ?? null,
+        prev_new_installs: previousRow?.new_installs ?? null,
+      };
+    }),
+  );
+  const totalWauByWeek = new Map();
+
+  baseRows.forEach((row) => {
+    totalWauByWeek.set(
+      row.week_start,
+      (totalWauByWeek.get(row.week_start) ?? 0) + row.wau,
+    );
+  });
+
+  const rankByWeekAndService = new Map();
+  const weeks = [...new Set(baseRows.map((row) => row.week_start))];
+
+  weeks.forEach((week) => {
+    const weekRows = baseRows
+      .filter((row) => row.week_start === week)
+      .sort((left, right) => right.wau - left.wau);
+    let previousWau = null;
+    let previousRank = 0;
+
+    weekRows.forEach((row, index) => {
+      const rank = row.wau === previousWau ? previousRank : index + 1;
+
+      previousWau = row.wau;
+      previousRank = rank;
+      rankByWeekAndService.set(`${week}:${row.service_id}`, rank);
+    });
+  });
+
+  const rangeStart = addDays(referenceWeek, -49);
+
+  return baseRows
+    .map((row) => {
+      const wauWowChange =
+        row.prev_wau === null ? null : row.wau - row.prev_wau;
+      const installsWowChange =
+        row.prev_new_installs === null
+          ? null
+          : row.new_installs - row.prev_new_installs;
+
+      return {
+        ...row,
+        wau_wow_change: wauWowChange,
+        wau_wow_rate:
+          row.prev_wau === null || row.prev_wau === 0
+            ? null
+            : roundToOne((wauWowChange / row.prev_wau) * 100),
+        wau_share:
+          totalWauByWeek.get(row.week_start) === 0
+            ? null
+            : roundToOne((row.wau / totalWauByWeek.get(row.week_start)) * 100),
+        wau_rank: rankByWeekAndService.get(
+          `${row.week_start}:${row.service_id}`,
+        ),
+        installs_wow_change: installsWowChange,
+        installs_wow_rate:
+          row.prev_new_installs === null || row.prev_new_installs === 0
+            ? null
+            : roundToOne((installsWowChange / row.prev_new_installs) * 100),
+      };
+    })
+    .filter(
+      (row) => row.week_start >= rangeStart && row.week_start <= referenceWeek,
+    )
+    .sort(
+      (left, right) =>
+        right.week_start.localeCompare(left.week_start) ||
+        left.wau_rank - right.wau_rank,
+    );
+}
+
+function createReportSummary(reportRows, referenceWeek) {
+  const currentRows = reportRows
+    .filter((row) => row.week_start === referenceWeek)
+    .sort((left, right) => left.wau_rank - right.wau_rank);
+  const previousWeek = addDays(referenceWeek, -7);
+  const previousRows = reportRows.filter(
+    (row) => row.week_start === previousWeek,
+  );
+  const totalWau = sum(currentRows, "wau");
+  const previousTotalWau = sum(previousRows, "wau");
+  const totalWauChange = currentRows.reduce(
+    (total, row) => total + (row.wau_wow_change ?? 0),
+    0,
+  );
+  const totalWauRate =
+    previousTotalWau === 0
+      ? null
+      : roundToOne((totalWauChange / previousTotalWau) * 100);
+  const fastestGrowth =
+    [...currentRows]
+      .filter((row) => row.wau_wow_rate !== null)
+      .sort((left, right) => right.wau_wow_rate - left.wau_wow_rate)[0] ??
+    [...currentRows].sort(
+      (left, right) =>
+        (right.wau_wow_change ?? -Infinity) -
+        (left.wau_wow_change ?? -Infinity),
+    )[0] ??
+    null;
+
+  return {
+    currentRows,
+    previousWeek,
+    previousRows,
+    totalWau,
+    previousTotalWau,
+    totalWauChange,
+    totalWauRate,
+    topService: currentRows[0] ?? null,
+    fastestGrowth,
+    totalNewInstalls: sum(currentRows, "new_installs"),
+    reportEnd: addDays(referenceWeek, 6),
+  };
+}
+
+async function getReportData(referenceWeek) {
+  const [weeklyRows, servicesRows] = await Promise.all([
+    fetchWeeklyRowsUntil(referenceWeek),
+    fetchTableRows("ott_services", "id"),
+  ]);
+  const rows = calculateReportRows(weeklyRows, servicesRows, referenceWeek);
+
+  return {
+    referenceWeek,
+    rows,
+    services: servicesRows,
+    summary: createReportSummary(rows, referenceWeek),
+  };
+}
+
+function MetricCard({ label, primary, secondary }) {
+  return (
+    <div className="reportDataMetric">
+      <span>{label}</span>
+      <strong>{primary}</strong>
+      <small>{secondary}</small>
+    </div>
+  );
+}
+
+function ReportDataTable({ columns, rows, emptyMessage }) {
+  return (
+    <div className="reportDataTableWrap">
+      <table className="reportDataTable">
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column.key}>{column.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={row.key ?? index}>
+              {columns.map((column) => (
+                <td key={column.key}>{column.render(row)}</td>
+              ))}
+            </tr>
+          ))}
+          {rows.length === 0 ? (
+            <tr>
+              <td className="emptyCell" colSpan={columns.length}>
+                {emptyMessage}
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReportDataModal({
+  isLoading,
+  errorMessage,
+  reportData,
+  selectedWeek,
+  onClose,
+  onBackdropClick,
+}) {
+  const summary = reportData?.summary ?? null;
+  const currentRows = summary?.currentRows ?? [];
+  const weeks = reportData
+    ? [...new Set(reportData.rows.map((row) => row.week_start))].sort()
+    : [];
+  const chartWeeks = weeks.slice(-8);
+  const chartServices = currentRows.map((row) => row.service_name);
+  const rowsByWeekAndService = new Map(
+    (reportData?.rows ?? []).map((row) => [
+      `${row.week_start}:${row.service_name}`,
+      row,
+    ]),
+  );
+  const rankingColumns = [
+    { key: "rank", label: "Rank", render: (row) => row.wau_rank },
+    { key: "service", label: "Service", render: (row) => row.service_name },
+    { key: "wau", label: "WAU", render: (row) => formatNumber(row.wau) },
+    {
+      key: "wau_wow",
+      label: "WoW",
+      render: (row) => formatPercent(row.wau_wow_rate),
+    },
+    {
+      key: "share",
+      label: "Share",
+      render: (row) =>
+        row.wau_share === null ? "-" : `${formatDecimal(row.wau_share, 1)}%`,
+    },
+    {
+      key: "new_installs",
+      label: "신규 설치",
+      render: (row) => formatNumber(row.new_installs),
+    },
+    {
+      key: "installs_wow",
+      label: "WoW",
+      render: (row) => formatPercent(row.installs_wow_rate),
+    },
+    { key: "ats", label: "ATS", render: (row) => formatDecimal(row.ats, 2) },
+    {
+      key: "note",
+      label: "주요 특징",
+      render: (row) => row.event_note || "큰 변화 없음",
+    },
+  ];
+  const comparisonColumns = [
+    { key: "service", label: "Service", render: (row) => row.service_name },
+    { key: "wau", label: "기준주 WAU", render: (row) => formatNumber(row.wau) },
+    {
+      key: "prev_wau",
+      label: "전주 WAU",
+      render: (row) => formatNumber(row.prev_wau),
+    },
+    {
+      key: "wau_change",
+      label: "WAU 증감",
+      render: (row) => formatSignedNumber(row.wau_wow_change),
+    },
+    {
+      key: "wau_rate",
+      label: "WAU 증감률",
+      render: (row) => formatPercent(row.wau_wow_rate),
+    },
+    {
+      key: "new_installs",
+      label: "기준주 신규 설치",
+      render: (row) => formatNumber(row.new_installs),
+    },
+    {
+      key: "prev_new_installs",
+      label: "전주 신규 설치",
+      render: (row) => formatNumber(row.prev_new_installs),
+    },
+    {
+      key: "installs_change",
+      label: "신규 설치 증감",
+      render: (row) => formatSignedNumber(row.installs_wow_change),
+    },
+    {
+      key: "installs_rate",
+      label: "신규 설치 증감률",
+      render: (row) => formatPercent(row.installs_wow_rate),
+    },
+  ];
+  const chartColumns = [
+    { key: "week", label: "Week", render: (row) => row.week_start },
+    ...chartServices.map((service) => ({
+      key: service,
+      label: service,
+      render: (row) => row[service],
+    })),
+  ];
+  const atsChartRows = chartWeeks.map((week) => ({
+    key: `ats-${week}`,
+    week_start: week,
+    ...Object.fromEntries(
+      chartServices.map((service) => {
+        const row = rowsByWeekAndService.get(`${week}:${service}`);
+
+        return [service, formatDecimal(row?.ats, 2)];
+      }),
+    ),
+  }));
+  const installsChartRows = chartWeeks.map((week) => ({
+    key: `installs-${week}`,
+    week_start: week,
+    ...Object.fromEntries(
+      chartServices.map((service) => {
+        const row = rowsByWeekAndService.get(`${week}:${service}`);
+
+        return [service, formatNumber(row?.new_installs)];
+      }),
+    ),
+  }));
+
+  return (
+    <div
+      aria-labelledby="report-data-title"
+      aria-modal="true"
+      className="modalBackdrop"
+      role="dialog"
+      onClick={onBackdropClick}
+    >
+      <section className="modalPanel reportDataPanel">
+        <div className="modalHeader">
+          <div>
+            <h2 id="report-data-title">리포트 데이터</h2>
+            <p className="reportDataSubtitle">
+              기준주 {selectedWeek ? formatShortDate(selectedWeek) : "-"}
+            </p>
+          </div>
+          <button
+            aria-label="닫기"
+            className="modalCloseButton"
+            type="button"
+            onClick={onClose}
+          >
+            x
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="reportDataState" aria-live="polite">
+            보고서 작성용 데이터를 불러오는 중입니다.
+          </div>
+        ) : errorMessage ? (
+          <div className="reportDataState reportDataError" role="alert">
+            {errorMessage}
+          </div>
+        ) : reportData && summary ? (
+          <div className="reportDataPages">
+            <article className="reportDataPage">
+              <div className="reportDataPageHeader">
+                <span>Page 1</span>
+                <h3>Executive Summary</h3>
+                <p>
+                  Report week: {formatShortDate(reportData.referenceWeek)} ~{" "}
+                  {formatShortDate(summary.reportEnd)}
+                </p>
+              </div>
+              <div className="reportDataMetrics">
+                <MetricCard
+                  label="Total WAU"
+                  primary={formatNumber(summary.totalWau)}
+                  secondary={`${formatSignedNumber(
+                    summary.totalWauChange,
+                  )} WoW`}
+                />
+                <MetricCard
+                  label="WoW Growth"
+                  primary={formatPercent(summary.totalWauRate)}
+                  secondary={`${formatShortDate(summary.previousWeek)} 대비`}
+                />
+                <MetricCard
+                  label="Top Service"
+                  primary={summary.topService?.service_name ?? "-"}
+                  secondary={
+                    summary.topService
+                      ? `${formatMetricCompact(summary.topService.wau)} WAU`
+                      : "-"
+                  }
+                />
+                <MetricCard
+                  label="Fastest Growth"
+                  primary={summary.fastestGrowth?.service_name ?? "-"}
+                  secondary={
+                    summary.fastestGrowth
+                      ? `${formatPercent(summary.fastestGrowth.wau_wow_rate)} WoW`
+                      : "-"
+                  }
+                />
+              </div>
+              <ul className="reportDataBullets">
+                <li>
+                  {currentRows.length}개 OTT 합산 WAU는 전주 대비{" "}
+                  {formatPercent(summary.totalWauRate)} 변동했습니다.
+                </li>
+                <li>
+                  {summary.topService
+                    ? `${summary.topService.service_name}가 ${formatDecimal(
+                        summary.topService.wau_share,
+                        1,
+                      )}% 점유율로 1위입니다.`
+                    : "선택한 주차의 1위 서비스 데이터가 없습니다."}
+                </li>
+                <li>
+                  {summary.fastestGrowth
+                    ? `${summary.fastestGrowth.service_name}가 WAU ${formatPercent(
+                        summary.fastestGrowth.wau_wow_rate,
+                      )}로 가장 크게 성장했습니다.`
+                    : "전주 대비 성장률을 계산할 데이터가 없습니다."}
+                </li>
+              </ul>
+            </article>
+
+            <article className="reportDataPage">
+              <div className="reportDataPageHeader">
+                <span>Page 2</span>
+                <h3>Service WAU Ranking</h3>
+              </div>
+              <ReportDataTable
+                columns={rankingColumns}
+                rows={currentRows}
+                emptyMessage="선택한 주차의 서비스별 데이터가 없습니다."
+              />
+            </article>
+
+            <article className="reportDataPage">
+              <div className="reportDataPageHeader">
+                <span>Page 3</span>
+                <h3>Week-over-week Movement</h3>
+                <p>
+                  {formatShortDate(reportData.referenceWeek)} vs.{" "}
+                  {formatShortDate(summary.previousWeek)}
+                </p>
+              </div>
+              <ReportDataTable
+                columns={comparisonColumns}
+                rows={currentRows}
+                emptyMessage="전주 비교 데이터를 계산할 수 없습니다."
+              />
+            </article>
+
+            <article className="reportDataPage">
+              <div className="reportDataPageHeader">
+                <span>Page 4</span>
+                <h3>8-Week Trend</h3>
+                <p>
+                  {formatShortDate(chartWeeks[0])} ~{" "}
+                  {formatShortDate(chartWeeks[chartWeeks.length - 1])}
+                </p>
+              </div>
+              <div className="reportDataChartTables">
+                <section>
+                  <h4>Average Time Spent</h4>
+                  <ReportDataTable
+                    columns={chartColumns}
+                    rows={atsChartRows}
+                    emptyMessage="ATS 차트용 데이터가 없습니다."
+                  />
+                </section>
+                <section>
+                  <h4>New Installs</h4>
+                  <ReportDataTable
+                    columns={chartColumns}
+                    rows={installsChartRows}
+                    emptyMessage="신규 설치 차트용 데이터가 없습니다."
+                  />
+                </section>
+              </div>
+            </article>
+          </div>
+        ) : (
+          <div className="reportDataState">표시할 데이터가 없습니다.</div>
+        )}
+      </section>
+    </div>
+  );
 }
 
 async function getDashboardData() {
@@ -325,6 +913,11 @@ export default function DashboardDataLoader({ reports = [] }) {
   const [data, setData] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isReportDataModalOpen, setIsReportDataModalOpen] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [reportDataError, setReportDataError] = useState("");
+  const [isReportDataLoading, setIsReportDataLoading] = useState(false);
+  const [selectedReportDataWeek, setSelectedReportDataWeek] = useState("");
   const [form, setForm] = useState(initialForm);
   const [saveError, setSaveError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -353,6 +946,10 @@ export default function DashboardDataLoader({ reports = [] }) {
     dataManagerIdentifiers.has(currentUserEmail.toLowerCase()) ||
     dataManagerIdentifiers.has(currentUserId.toLowerCase());
 
+  const updateSelectedReportDataWeek = useCallback((week) => {
+    setSelectedReportDataWeek(week);
+  }, []);
+
   const openReportModal = () => {
     if (!session || !reports.length || !selectedReport) {
       return;
@@ -373,6 +970,42 @@ export default function DashboardDataLoader({ reports = [] }) {
     }, REPORT_MODAL_TRANSITION_MS);
   };
 
+  const openReportDataModal = async () => {
+    const referenceWeek = selectedReportDataWeek || data?.latestWeek;
+
+    if (!session || !referenceWeek) {
+      return;
+    }
+
+    setIsReportDataModalOpen(true);
+    setIsReportDataLoading(true);
+    setReportDataError("");
+    setReportData(null);
+
+    try {
+      const nextReportData = await getReportData(referenceWeek);
+
+      setReportData(nextReportData);
+    } catch (error) {
+      setReportDataError(error.message);
+    } finally {
+      setIsReportDataLoading(false);
+    }
+  };
+
+  const closeReportDataModal = () => {
+    if (!isReportDataLoading) {
+      setIsReportDataModalOpen(false);
+      setReportDataError("");
+    }
+  };
+
+  const closeReportDataModalFromBackdrop = (event) => {
+    if (event.target === event.currentTarget) {
+      closeReportDataModal();
+    }
+  };
+
   const loadData = useCallback(() => {
     let isMounted = true;
 
@@ -383,6 +1016,13 @@ export default function DashboardDataLoader({ reports = [] }) {
         }
 
         setData(nextData);
+        setSelectedReportDataWeek((currentWeek) => {
+          const weeks = new Set(nextData.trend.map((row) => row.week_start));
+
+          return currentWeek && weeks.has(currentWeek)
+            ? currentWeek
+            : nextData.latestWeek;
+        });
         setErrorMessage("");
       })
       .catch((error) => {
@@ -466,7 +1106,12 @@ export default function DashboardDataLoader({ reports = [] }) {
   }, [reports]);
 
   useEffect(() => {
-    if (!isModalOpen && !isAuthModalOpen && !isReportModalOpen) {
+    if (
+      !isModalOpen &&
+      !isAuthModalOpen &&
+      !isReportModalOpen &&
+      !isReportDataModalOpen
+    ) {
       return;
     }
 
@@ -476,7 +1121,7 @@ export default function DashboardDataLoader({ reports = [] }) {
     return () => {
       document.body.style.overflow = originalOverflow;
     };
-  }, [isModalOpen, isAuthModalOpen, isReportModalOpen]);
+  }, [isModalOpen, isAuthModalOpen, isReportModalOpen, isReportDataModalOpen]);
 
   useEffect(() => {
     if (!isReportModalOpen) {
@@ -509,7 +1154,13 @@ export default function DashboardDataLoader({ reports = [] }) {
       setIsReportModalVisible(false);
       setIsReportModalOpen(false);
     }
-  }, [isReportModalOpen, session]);
+
+    if (!session && isReportDataModalOpen) {
+      setIsReportDataModalOpen(false);
+      setReportData(null);
+      setReportDataError("");
+    }
+  }, [isReportDataModalOpen, isReportModalOpen, session]);
 
   const openModal = () => {
     if (!isDataManager) {
@@ -578,6 +1229,9 @@ export default function DashboardDataLoader({ reports = [] }) {
       setData(null);
       setErrorMessage("");
       setIsModalOpen(false);
+      setIsReportDataModalOpen(false);
+      setReportData(null);
+      setReportDataError("");
       setIsReportModalVisible(false);
       setIsReportModalOpen(false);
     }
@@ -739,6 +1393,16 @@ export default function DashboardDataLoader({ reports = [] }) {
       <div className="headerTitleRow">
         <h1>OTT 이용 현황 대시보드</h1>
         <div className="headerActions">
+          {session ? (
+            <button
+              className="secondaryButton reportOpenButton"
+              disabled={!data || !selectedReportDataWeek || isReportDataLoading}
+              type="button"
+              onClick={openReportDataModal}
+            >
+              리포트 데이터
+            </button>
+          ) : null}
           {session ? (
             <button
               className="secondaryButton reportOpenButton"
@@ -953,6 +1617,18 @@ export default function DashboardDataLoader({ reports = [] }) {
       </div>
     ) : null;
 
+  const reportDataModal =
+    isReportDataModalOpen && session ? (
+      <ReportDataModal
+        errorMessage={reportDataError}
+        isLoading={isReportDataLoading}
+        reportData={reportData}
+        selectedWeek={selectedReportDataWeek || data?.latestWeek}
+        onBackdropClick={closeReportDataModalFromBackdrop}
+        onClose={closeReportDataModal}
+      />
+    ) : null;
+
   const authModal = isAuthModalOpen ? (
     <div
       aria-labelledby="login-title"
@@ -1073,6 +1749,7 @@ export default function DashboardDataLoader({ reports = [] }) {
           <p>{errorMessage}</p>
         </section>
         {modal}
+        {reportDataModal}
         {reportModal}
         {authModal}
       </>
@@ -1088,6 +1765,7 @@ export default function DashboardDataLoader({ reports = [] }) {
           <p>잠시 후 데이터 확인 가능 여부를 표시합니다.</p>
         </section>
         {modal}
+        {reportDataModal}
         {reportModal}
         {authModal}
       </>
@@ -1103,6 +1781,7 @@ export default function DashboardDataLoader({ reports = [] }) {
           <p>오른쪽 상단의 로그인 버튼을 눌러 이메일과 비번을 입력해주세요.</p>
         </section>
         {modal}
+        {reportDataModal}
         {reportModal}
         {authModal}
       </>
@@ -1118,6 +1797,7 @@ export default function DashboardDataLoader({ reports = [] }) {
           <p>브라우저에서 직접 최신 데이터를 요청하고 있습니다.</p>
         </section>
         {modal}
+        {reportDataModal}
         {reportModal}
         {authModal}
       </>
@@ -1133,6 +1813,7 @@ export default function DashboardDataLoader({ reports = [] }) {
           <p>Supabase 테이블에 조회 가능한 행이 있는지 확인해주세요.</p>
         </section>
         {modal}
+        {reportDataModal}
         {reportModal}
         {authModal}
       </>
@@ -1142,8 +1823,12 @@ export default function DashboardDataLoader({ reports = [] }) {
   return (
     <>
       {header}
-      <DashboardCharts data={data} />
+      <DashboardCharts
+        data={data}
+        onRankingDateChange={updateSelectedReportDataWeek}
+      />
       {modal}
+      {reportDataModal}
       {reportModal}
       {authModal}
     </>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import DashboardCharts from "./DashboardCharts";
 import ReportSlideshow from "./ReportSlideshow";
+import { getReportData } from "../lib/reportData";
 import supabase from "../lib/supabase";
 
 const SUPABASE_PAGE_SIZE = 1000;
@@ -104,10 +105,6 @@ function formatWeekStart(value) {
 
 function roundToTwo(value) {
   return Math.round(value * 100) / 100;
-}
-
-function roundToOne(value) {
-  return Math.round(value * 10) / 10;
 }
 
 function sum(rows, key) {
@@ -240,199 +237,6 @@ function createFormDefaults(services, latestWeek) {
     week_start: addDays(latestWeek, 7),
     service_id: services[0]?.id != null ? String(services[0].id) : "",
     event_type_id: "",
-  };
-}
-
-async function fetchWeeklyRowsUntil(referenceWeek) {
-  const rows = [];
-  let from = 0;
-
-  while (true) {
-    const to = from + SUPABASE_PAGE_SIZE - 1;
-    const result = await runSupabaseQueryWithClockSkewRetry(() =>
-      supabase
-        .from("ott_weekly")
-        .select("*")
-        .lte("week_start", referenceWeek)
-        .order("week_start")
-        .range(from, to),
-    );
-    const pageRows = assertSupabaseResult("ott_weekly", result);
-
-    rows.push(...pageRows);
-
-    if (pageRows.length < SUPABASE_PAGE_SIZE) {
-      return rows;
-    }
-
-    from += SUPABASE_PAGE_SIZE;
-  }
-}
-
-function calculateReportRows(weeklyRows, servicesRows, referenceWeek) {
-  const serviceById = createLookup(servicesRows, "id");
-  const rows = weeklyRows
-    .map((row) => ({
-      week_start: formatWeekStart(row.week_start),
-      service_id: row.service_id,
-      service_name: serviceById.get(row.service_id)?.name ?? "Unknown",
-      wau: Number(row.wau ?? 0),
-      total_usage_hours: Number(row.total_usage_hours ?? 0),
-      active_devices: Number(row.active_devices ?? 0),
-      new_installs: Number(row.new_installs ?? 0),
-      event_note: row.event_note ?? null,
-    }))
-    .sort(
-      (left, right) =>
-        String(left.service_id).localeCompare(String(right.service_id)) ||
-        left.week_start.localeCompare(right.week_start),
-    );
-  const rowsByServiceId = new Map();
-
-  rows.forEach((row) => {
-    const serviceRows = rowsByServiceId.get(row.service_id) ?? [];
-    serviceRows.push(row);
-    rowsByServiceId.set(row.service_id, serviceRows);
-  });
-
-  const baseRows = [...rowsByServiceId.values()].flatMap((serviceRows) =>
-    serviceRows.map((row, index) => {
-      const previousRow = serviceRows[index - 1];
-
-      return {
-        ...row,
-        ats: row.wau === 0 ? null : roundToTwo(row.total_usage_hours / row.wau),
-        prev_wau: previousRow?.wau ?? null,
-        prev_new_installs: previousRow?.new_installs ?? null,
-      };
-    }),
-  );
-  const totalWauByWeek = new Map();
-
-  baseRows.forEach((row) => {
-    totalWauByWeek.set(
-      row.week_start,
-      (totalWauByWeek.get(row.week_start) ?? 0) + row.wau,
-    );
-  });
-
-  const rankByWeekAndService = new Map();
-  const weeks = [...new Set(baseRows.map((row) => row.week_start))];
-
-  weeks.forEach((week) => {
-    const weekRows = baseRows
-      .filter((row) => row.week_start === week)
-      .sort((left, right) => right.wau - left.wau);
-    let previousWau = null;
-    let previousRank = 0;
-
-    weekRows.forEach((row, index) => {
-      const rank = row.wau === previousWau ? previousRank : index + 1;
-
-      previousWau = row.wau;
-      previousRank = rank;
-      rankByWeekAndService.set(`${week}:${row.service_id}`, rank);
-    });
-  });
-
-  const rangeStart = addDays(referenceWeek, -49);
-
-  return baseRows
-    .map((row) => {
-      const wauWowChange =
-        row.prev_wau === null ? null : row.wau - row.prev_wau;
-      const installsWowChange =
-        row.prev_new_installs === null
-          ? null
-          : row.new_installs - row.prev_new_installs;
-
-      return {
-        ...row,
-        wau_wow_change: wauWowChange,
-        wau_wow_rate:
-          row.prev_wau === null || row.prev_wau === 0
-            ? null
-            : roundToOne((wauWowChange / row.prev_wau) * 100),
-        wau_share:
-          totalWauByWeek.get(row.week_start) === 0
-            ? null
-            : roundToOne((row.wau / totalWauByWeek.get(row.week_start)) * 100),
-        wau_rank: rankByWeekAndService.get(
-          `${row.week_start}:${row.service_id}`,
-        ),
-        installs_wow_change: installsWowChange,
-        installs_wow_rate:
-          row.prev_new_installs === null || row.prev_new_installs === 0
-            ? null
-            : roundToOne((installsWowChange / row.prev_new_installs) * 100),
-      };
-    })
-    .filter(
-      (row) => row.week_start >= rangeStart && row.week_start <= referenceWeek,
-    )
-    .sort(
-      (left, right) =>
-        right.week_start.localeCompare(left.week_start) ||
-        left.wau_rank - right.wau_rank,
-    );
-}
-
-function createReportSummary(reportRows, referenceWeek) {
-  const currentRows = reportRows
-    .filter((row) => row.week_start === referenceWeek)
-    .sort((left, right) => left.wau_rank - right.wau_rank);
-  const previousWeek = addDays(referenceWeek, -7);
-  const previousRows = reportRows.filter(
-    (row) => row.week_start === previousWeek,
-  );
-  const totalWau = sum(currentRows, "wau");
-  const previousTotalWau = sum(previousRows, "wau");
-  const totalWauChange = currentRows.reduce(
-    (total, row) => total + (row.wau_wow_change ?? 0),
-    0,
-  );
-  const totalWauRate =
-    previousTotalWau === 0
-      ? null
-      : roundToOne((totalWauChange / previousTotalWau) * 100);
-  const fastestGrowth =
-    [...currentRows]
-      .filter((row) => row.wau_wow_rate !== null)
-      .sort((left, right) => right.wau_wow_rate - left.wau_wow_rate)[0] ??
-    [...currentRows].sort(
-      (left, right) =>
-        (right.wau_wow_change ?? -Infinity) -
-        (left.wau_wow_change ?? -Infinity),
-    )[0] ??
-    null;
-
-  return {
-    currentRows,
-    previousWeek,
-    previousRows,
-    totalWau,
-    previousTotalWau,
-    totalWauChange,
-    totalWauRate,
-    topService: currentRows[0] ?? null,
-    fastestGrowth,
-    totalNewInstalls: sum(currentRows, "new_installs"),
-    reportEnd: addDays(referenceWeek, 6),
-  };
-}
-
-async function getReportData(referenceWeek) {
-  const [weeklyRows, servicesRows] = await Promise.all([
-    fetchWeeklyRowsUntil(referenceWeek),
-    fetchTableRows("ott_services", "id"),
-  ]);
-  const rows = calculateReportRows(weeklyRows, servicesRows, referenceWeek);
-
-  return {
-    referenceWeek,
-    rows,
-    services: servicesRows,
-    summary: createReportSummary(rows, referenceWeek),
   };
 }
 

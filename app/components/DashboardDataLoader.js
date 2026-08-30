@@ -9,6 +9,16 @@ import supabase from "../lib/supabase";
 const SUPABASE_PAGE_SIZE = 1000;
 const JWT_CLOCK_SKEW_RETRY_DELAYS = [1500, 4000, 8000];
 const REPORT_MODAL_TRANSITION_MS = 240;
+const ANALYSIS_CSV_HEADERS = [
+  "주차",
+  "서비스명",
+  "범위",
+  "WAU",
+  "이용시간",
+  "활성기기",
+  "신규 설치",
+  "이벤트",
+];
 const initialForm = {
   week_start: "",
   active_devices: "",
@@ -99,6 +109,30 @@ async function fetchTableRows(tableName, orderColumn) {
   }
 }
 
+async function fetchAnalysisCsvRows() {
+  const [weeklyRows, servicesRows, eventTypesRows] = await Promise.all([
+    fetchTableRows("ott_weekly", "week_start"),
+    fetchTableRows("ott_services", "id"),
+    fetchTableRows("event_types", "id"),
+  ]);
+  const serviceById = createLookup(servicesRows, "id");
+  const eventTypeById = createLookup(eventTypesRows, "id");
+
+  return weeklyRows
+    .map((row) => ({
+      ...row,
+      week_start: formatWeekStart(row.week_start),
+      service_name: serviceById.get(row.service_id)?.name ?? "Unknown",
+      service_range: getServiceRange(serviceById.get(row.service_id)),
+      event_type_name: eventTypeById.get(row.event_type_id)?.name ?? "",
+    }))
+    .sort(
+      (left, right) =>
+        left.week_start.localeCompare(right.week_start) ||
+        left.service_name.localeCompare(right.service_name),
+    );
+}
+
 function formatWeekStart(value) {
   return String(value).slice(0, 10);
 }
@@ -168,6 +202,66 @@ function addDays(value, days) {
   date.setUTCDate(date.getUTCDate() + days);
 
   return date.toISOString().slice(0, 10);
+}
+
+function getServiceRange(service) {
+  if (!service) {
+    return "";
+  }
+
+  return service.origin ?? "";
+}
+
+function createEventText(row) {
+  return [row.event_type_name, row.event_note].filter(Boolean).join(" / ");
+}
+
+function escapeCsvCell(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const text = String(value);
+
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  return text;
+}
+
+function createAnalysisCsv(rows) {
+  const csvRows = rows.map((row) => {
+    const weekStart = formatWeekStart(row.week_start);
+
+    return [
+      weekStart,
+      row.service_name,
+      row.service_range,
+      row.wau,
+      row.total_usage_hours,
+      row.active_devices,
+      row.new_installs,
+      createEventText(row),
+    ];
+  });
+
+  return [ANALYSIS_CSV_HEADERS, ...csvRows]
+    .map((row) => row.map(escapeCsvCell).join(","))
+    .join("\r\n");
+}
+
+function downloadCsv(content, fileName) {
+  const blob = new Blob([`\uFEFF${content}`], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  window.URL.revokeObjectURL(url);
 }
 
 function formatShortDate(value) {
@@ -284,11 +378,14 @@ function ReportDataTable({ columns, rows, emptyMessage }) {
 
 function ReportDataModal({
   isLoading,
+  isCsvDownloading,
   errorMessage,
+  csvErrorMessage,
   reportData,
   selectedWeek,
   onClose,
   onBackdropClick,
+  onDownloadCsv,
 }) {
   const summary = reportData?.summary ?? null;
   const currentRows = summary?.currentRows ?? [];
@@ -421,15 +518,31 @@ function ReportDataModal({
               기준주 {selectedWeek ? formatShortDate(selectedWeek) : "-"}
             </p>
           </div>
-          <button
-            aria-label="닫기"
-            className="modalCloseButton"
-            type="button"
-            onClick={onClose}
-          >
-            x
-          </button>
+          <div className="modalHeaderActions">
+            <button
+              className="secondaryButton"
+              disabled={isCsvDownloading}
+              type="button"
+              onClick={onDownloadCsv}
+            >
+              {isCsvDownloading ? "다운로드 중" : "전체 CSV 다운로드"}
+            </button>
+            <button
+              aria-label="닫기"
+              className="modalCloseButton"
+              type="button"
+              onClick={onClose}
+            >
+              x
+            </button>
+          </div>
         </div>
+
+        {csvErrorMessage ? (
+          <p className="reportDataDownloadError" role="alert">
+            {csvErrorMessage}
+          </p>
+        ) : null}
 
         {isLoading ? (
           <div className="reportDataState" aria-live="polite">
@@ -680,6 +793,7 @@ async function getDashboardData() {
       ats: wau === 0 ? null : roundToTwo(totalUsageHours / wau),
       total_usage_hours: totalUsageHours,
       active_devices: sum(weekRows, "active_devices"),
+      new_installs: sum(weekRows, "new_installs"),
       event_types: distinctJoined(weekRows.map((row) => row.event_type)),
       event_notes: distinctJoined(weekRows.map((row) => row.event_note)),
     };
@@ -694,6 +808,7 @@ async function getDashboardData() {
         : roundToTwo(Number(row.total_usage_hours) / Number(row.wau)),
     total_usage_hours: Number(row.total_usage_hours),
     active_devices: Number(row.active_devices),
+    new_installs: Number(row.new_installs),
     event_types: row.event_type,
     event_notes: row.event_note,
   }));
@@ -720,7 +835,9 @@ export default function DashboardDataLoader({ reports = [] }) {
   const [isReportDataModalOpen, setIsReportDataModalOpen] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [reportDataError, setReportDataError] = useState("");
+  const [csvDownloadError, setCsvDownloadError] = useState("");
   const [isReportDataLoading, setIsReportDataLoading] = useState(false);
+  const [isCsvDownloading, setIsCsvDownloading] = useState(false);
   const [selectedReportDataWeek, setSelectedReportDataWeek] = useState("");
   const [form, setForm] = useState(initialForm);
   const [saveError, setSaveError] = useState("");
@@ -784,6 +901,7 @@ export default function DashboardDataLoader({ reports = [] }) {
     setIsReportDataModalOpen(true);
     setIsReportDataLoading(true);
     setReportDataError("");
+    setCsvDownloadError("");
     setReportData(null);
 
     try {
@@ -801,6 +919,7 @@ export default function DashboardDataLoader({ reports = [] }) {
     if (!isReportDataLoading) {
       setIsReportDataModalOpen(false);
       setReportDataError("");
+      setCsvDownloadError("");
     }
   };
 
@@ -963,8 +1082,26 @@ export default function DashboardDataLoader({ reports = [] }) {
       setIsReportDataModalOpen(false);
       setReportData(null);
       setReportDataError("");
+      setCsvDownloadError("");
     }
   }, [isReportDataModalOpen, isReportModalOpen, session]);
+
+  const handleAnalysisCsvDownload = async () => {
+    setIsCsvDownloading(true);
+    setCsvDownloadError("");
+
+    try {
+      const rows = await fetchAnalysisCsvRows();
+      const csv = createAnalysisCsv(rows);
+      const createdAt = new Date().toISOString().slice(0, 10);
+
+      downloadCsv(csv, `ott-weekly-analysis-${createdAt}.csv`);
+    } catch (error) {
+      setCsvDownloadError(error.message);
+    } finally {
+      setIsCsvDownloading(false);
+    }
+  };
 
   const openModal = () => {
     if (!isDataManager) {
@@ -1036,6 +1173,7 @@ export default function DashboardDataLoader({ reports = [] }) {
       setIsReportDataModalOpen(false);
       setReportData(null);
       setReportDataError("");
+      setCsvDownloadError("");
       setIsReportModalVisible(false);
       setIsReportModalOpen(false);
     }
@@ -1273,7 +1411,9 @@ export default function DashboardDataLoader({ reports = [] }) {
               required
               type="date"
               value={form.week_start}
-              onChange={(event) => updateField("week_start", event.target.value)}
+              onChange={(event) =>
+                updateField("week_start", event.target.value)
+              }
             />
           </label>
 
@@ -1282,7 +1422,9 @@ export default function DashboardDataLoader({ reports = [] }) {
             <select
               required
               value={form.service_id}
-              onChange={(event) => updateField("service_id", event.target.value)}
+              onChange={(event) =>
+                updateField("service_id", event.target.value)
+              }
             >
               {services.map((service) => (
                 <option key={service.id} value={service.id}>
@@ -1301,7 +1443,9 @@ export default function DashboardDataLoader({ reports = [] }) {
               pattern="[0-9]*"
               type="text"
               value={form.wau}
-              onChange={(event) => updateIntegerField("wau", event.target.value)}
+              onChange={(event) =>
+                updateIntegerField("wau", event.target.value)
+              }
             />
           </label>
 
@@ -1371,7 +1515,9 @@ export default function DashboardDataLoader({ reports = [] }) {
             <input
               type="text"
               value={form.event_note}
-              onChange={(event) => updateField("event_note", event.target.value)}
+              onChange={(event) =>
+                updateField("event_note", event.target.value)
+              }
             />
           </label>
         </div>
@@ -1425,11 +1571,14 @@ export default function DashboardDataLoader({ reports = [] }) {
     isReportDataModalOpen && session ? (
       <ReportDataModal
         errorMessage={reportDataError}
+        csvErrorMessage={csvDownloadError}
+        isCsvDownloading={isCsvDownloading}
         isLoading={isReportDataLoading}
         reportData={reportData}
         selectedWeek={selectedReportDataWeek || data?.latestWeek}
         onBackdropClick={closeReportDataModalFromBackdrop}
         onClose={closeReportDataModal}
+        onDownloadCsv={handleAnalysisCsvDownload}
       />
     ) : null;
 
@@ -1472,7 +1621,9 @@ export default function DashboardDataLoader({ reports = [] }) {
               autoComplete="email"
               type="email"
               value={loginForm.email}
-              onChange={(event) => updateLoginField("email", event.target.value)}
+              onChange={(event) =>
+                updateLoginField("email", event.target.value)
+              }
             />
           </label>
 
@@ -1537,7 +1688,9 @@ export default function DashboardDataLoader({ reports = [] }) {
               );
             }}
           >
-            {authMode === "passwordChange" ? "로그인으로 돌아가기" : "비번 변경"}
+            {authMode === "passwordChange"
+              ? "로그인으로 돌아가기"
+              : "비번 변경"}
           </button>
         </div>
       </form>

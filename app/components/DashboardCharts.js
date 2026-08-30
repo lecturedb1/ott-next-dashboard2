@@ -234,6 +234,7 @@ function formatShortWeek(value) {
 const COMPARISON_METRICS = [
   { key: "wau", label: "WAU", unit: "명" },
   { key: "ats", label: "ATS", unit: "시간" },
+  { key: "new_installs", label: "신규 설치" },
   { key: "total_usage_hours", label: "이용시간", unit: "시간" },
   { key: "active_devices", label: "액티브 기기", unit: "대" },
 ];
@@ -243,7 +244,7 @@ function getComparisonMetric(key) {
 }
 
 function formatMetricTick(metricKey, value) {
-  return metricKey === "ats" ? formatNumber(value) : formatMillions(value);
+  return metricKey === "wau" ? formatMillions(value) : formatNumber(value);
 }
 
 function formatMetricValue(metricKey, value) {

@@ -6,3 +6,4 @@ out/
 .prettierrc
 .codex-tmp
 *.ndjson
+reports

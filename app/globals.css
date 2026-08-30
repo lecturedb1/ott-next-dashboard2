@@ -729,6 +729,13 @@ th {
   color: #b91c1c;
 }
 
+.reportDataDownloadError {
+  margin: -6px 0 14px;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .reportDataPages {
   display: grid;
   gap: 14px;
@@ -862,6 +869,13 @@ th {
 .modalHeader h2 {
   margin: 0;
   font-size: 18px;
+}
+
+.modalHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .modalCloseButton {
@@ -1069,6 +1083,15 @@ th {
 
   .modalPanel {
     padding: 18px;
+  }
+
+  .reportDataPanel .modalHeader {
+    align-items: flex-start;
+  }
+
+  .modalHeaderActions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .formGrid {
